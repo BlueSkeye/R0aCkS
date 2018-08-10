@@ -1,0 +1,5 @@
+﻿Ported from r0ak project from 
+
+https://github.com/ionescu007/r0ak
+Copyright (c) Alex Ionescu.  All rights reserved.
+Author: Alex Ionescu (@aionescu) 21-Jul-2018 - First public version
