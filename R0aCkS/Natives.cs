@@ -38,9 +38,16 @@ namespace R0aCkS
             [In] IntPtr ExistingTokenHandle,
             [In] uint /*SECURITY_IMPERSONATION_LEVEL*/ ImpersonationLevel,
             [Out] out IntPtr DuplicateTokenHandle);
-        [DllImport("KERNEL32.DLL", SetLastError = true)]
+        /// <summary></summary>
+        /// <param name="lpImageBase"></param>
+        /// <param name="cb"></param>
+        /// <param name="lpcbNeeded"></param>
+        /// <returns></returns>
+        /// <remarks>See documentation on MSDN for reason of entry point renaming. Probably working since
+        /// Windows 8 and later versions.</remarks>
+        [DllImport("KERNEL32.DLL", EntryPoint = "K32EnumDeviceDrivers", SetLastError = true)]
         internal static extern bool EnumDeviceDrivers(
-            [In] IntPtr[] lpImageBase,
+            [In] UIntPtr[] lpImageBase,
             [In] uint cb,
             [Out] out uint lpcbNeeded);
         [DllImport("KERNEL32.DLL", SetLastError = true)]
@@ -50,15 +57,27 @@ namespace R0aCkS
         internal static extern IntPtr GetCurrentProcess();
         [DllImport("KERNEL32.DLL", SetLastError = true)]
         internal static extern IntPtr GetCurrentThread();
-        [DllImport("KERNEL32.DLL", CharSet = CharSet.Ansi, SetLastError = true)]
+        /// <summary></summary>
+        /// <param name="ImageBase"></param>
+        /// <param name="lpFilename"></param>
+        /// <param name="nSize"></param>
+        /// <returns></returns>
+        /// <remarks>See documentation on MSDN for reason of entry point renaming. Probably working since
+        /// Windows 8 and later versions.</remarks>
+        [DllImport("KERNEL32.DLL", EntryPoint = "K32GetDeviceDriverBaseName", CharSet = CharSet.Ansi, SetLastError = true)]
         internal static extern uint GetDeviceDriverBaseNameA(
-            [In] IntPtr ImageBase,
-            [In] StringBuilder lpFilename,
+            [In] UIntPtr ImageBase,
+            [In] IntPtr lpFilename,
             [In] int nSize);
-        [DllImport("KERNEL32.DLL", CharSet = CharSet.Unicode, SetLastError = true)]
+        [DllImport("KERNEL32.DLL", CallingConvention = CallingConvention.Winapi, CharSet = CharSet.Ansi,
+            SetLastError = true)]
         internal static extern IntPtr GetProcAddress(
             [In] IntPtr hModule,
             [In] string lpProcName);
+        [DllImport("KERNEL32.DLL", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern IntPtr GetProcAddress(
+            [In] IntPtr hModule,
+            [In] ulong ordinal);
         [DllImport("KERNEL32.DLL", CharSet = CharSet.Unicode, SetLastError = true)]
         internal static extern IntPtr GetProcessHeap();
         [DllImport("KERNEL32.DLL", CharSet = CharSet.Unicode, SetLastError = true)]

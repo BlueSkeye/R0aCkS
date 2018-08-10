@@ -430,31 +430,38 @@ namespace R0aCkS
             return true;
         }
 
-        internal static IntPtr GetDriverBaseAddr(string BaseName)
+        internal static UIntPtr GetDriverBaseAddr(string BaseName)
         {
-            IntPtr[] BaseAddresses = new IntPtr[1024];
+            UIntPtr[] BaseAddresses = new UIntPtr[1024];
             uint cbNeeded;
-            StringBuilder FileName = new StringBuilder(260);
 
             // Enumerate all the device drivers
             if (!Natives.EnumDeviceDrivers(BaseAddresses, (uint)(IntPtr.Size * BaseAddresses.Length), out cbNeeded)) {
                 Console.WriteLine("[-] Failed to enumerate driver base addresses: 0x{0:8X}", Marshal.GetLastWin32Error());
-                return IntPtr.Zero;
+                return UIntPtr.Zero;
             }
-            // Go through each one
-            for (int index = 0; index < (cbNeeded / IntPtr.Size); index++) {
-                // Get its name
-                FileName.EnsureCapacity(260);
-                if (0 == Natives.GetDeviceDriverBaseNameA(BaseAddresses[index], FileName, FileName.Capacity)) {
-                    Console.WriteLine("[-] Failed to get driver name: 0x{0:8X}", Marshal.GetLastWin32Error());
-                    return IntPtr.Zero;
-                }
-                // Compare it
-                if (0 == string.Compare(FileName.ToString(), BaseName, true)) {
-                    return (IntPtr)BaseAddresses[index];
+            IntPtr buffer = IntPtr.Zero;
+            const int bufferLength = 260;
+            try {
+                buffer = Marshal.AllocHGlobal(bufferLength);
+                // Go through each one
+                for (int index = 0; index < (cbNeeded / IntPtr.Size); index++) {
+                    // Get its name
+                    if (0 == Natives.GetDeviceDriverBaseNameA(BaseAddresses[index], buffer, bufferLength)) {
+                        Console.WriteLine("[-] Failed to get driver name: 0x{0:8X}", Marshal.GetLastWin32Error());
+                        return UIntPtr.Zero;
+                    }
+                    // Compare it
+                    string candidate = Marshal.PtrToStringAnsi(buffer);
+                    if (0 == string.Compare(candidate, BaseName, true)) {
+                        return BaseAddresses[index];
+                    }
                 }
             }
-            return IntPtr.Zero;
+            finally {
+                if (IntPtr.Zero != buffer) { Marshal.FreeHGlobal(buffer); }
+            }
+            return UIntPtr.Zero;
         }
 
         private static unsafe UIntPtr GetKernelAddress(uint Size)
@@ -773,14 +780,14 @@ namespace R0aCkS
         {
             UIntPtr imageBase = UIntPtr.Zero;
             UIntPtr kernelBase = UIntPtr.Zero;
-            UIntPtr offset;
+            ulong offset;
             UIntPtr /* PIMAGEHLP_SYMBOL64 */ symbol = UIntPtr.Zero;
-            IntPtr realKernelBase;
+            UIntPtr realKernelBase;
 
             try {
                 // Get the base address of the kernel image in kernel-mode
                 realKernelBase = GetDriverBaseAddr(ModuleName);
-                if (IntPtr.Zero == realKernelBase) {
+                if (UIntPtr.Zero == realKernelBase) {
                     Console.WriteLine("[-] Couldn't find base address for {0}", ModuleName);
                     return UIntPtr.Zero;
                 }
@@ -817,11 +824,12 @@ namespace R0aCkS
                 Marshal.WriteInt32(symbol, (int)Marshal.OffsetOf<IMAGEHLP_SYMBOL64>("MaxNameLength"), 1);
                 // symbol->MaxNameLength = 1;
                 if (!pSymGetSymFromName64(Natives.GetCurrentProcess(), symName, symbol)) {
-                    Console.WriteLine("[-] Couldn't find {0} symbol", symName);
+                    Console.WriteLine("[-] Couldn't find {0} symbol : Err 0x{1:X8}",
+                        symName, Marshal.GetLastWin32Error());
                     return UIntPtr.Zero;
                 }
                 // Compute the offset based on the mapped address
-                offset = (UIntPtr)((long)Marshal.ReadIntPtr(symbol, 4) /* symbol->Address */ - (long)kernelBase);
+                offset = ((ulong)Marshal.ReadIntPtr(symbol, 4) /* symbol->Address */ - (ulong)kernelBase);
             }
             finally {
                 if (UIntPtr.Zero != kernelBase) {
@@ -835,7 +843,7 @@ namespace R0aCkS
                 }
             }
             // Compute the final location based on the real kernel base
-            return (UIntPtr)((long)realKernelBase + (long)offset);
+            return (UIntPtr)((ulong)realKernelBase + offset);
         }
 
         private static bool SymSetup()
@@ -917,6 +925,13 @@ namespace R0aCkS
                     Console.WriteLine("[-] Failed to find hal!XmMovOp");
                     return false;
                 }
+                g_TrampolineFunction = SymLookup("ntoskrnl.exe", "PopFanIrpComplete");
+                if (UIntPtr.Zero == g_TrampolineFunction) {
+                    Console.WriteLine("[-] Failed to find nt!PopFanIrpComplete");
+                    return false;
+                }
+                // HSTI = Hardware Security Test Interface
+                // See https://docs.microsoft.com/fr-fr/windows-hardware/test/hlk/testref/hardware-security-testability-specification
                 g_HstiBufferSize = SymLookup("ntoskrnl.exe", "SepHSTIResultsSize");
                 if (UIntPtr.Zero == g_HstiBufferSize) {
                     Console.WriteLine("[-] Failed to find nt!SepHSTIResultsSize");
@@ -925,11 +940,6 @@ namespace R0aCkS
                 g_HstiBufferPointer = SymLookup("ntoskrnl.exe", "SepHSTIResultsBuffer");
                 if (UIntPtr.Zero == g_HstiBufferPointer) {
                     Console.WriteLine("[-] Failed to find nt!SepHSTIResultsBuffer");
-                    return false;
-                }
-                g_TrampolineFunction = SymLookup("ntoskrnl.exe", "PopFanIrpComplete");
-                if (UIntPtr.Zero == g_TrampolineFunction) {
-                    Console.WriteLine("[-] Failed to find nt!PopFanIrpComplete");
                     return false;
                 }
             }
@@ -944,7 +954,8 @@ namespace R0aCkS
         {
             IntPtr dynamicFunction = Natives.GetProcAddress(hMod, functionName);
             if (IntPtr.Zero == dynamicFunction) {
-                Console.WriteLine("[-] Failed to find {0}", functionName);
+                Console.WriteLine("[-] Failed to find {0}. Err 0x{1:X4}",
+                    functionName, Marshal.GetLastWin32Error());
                 pointer = default(T);
                 return false;
             }
@@ -967,7 +978,7 @@ namespace R0aCkS
         internal const uint SystemHardwareSecurityTestInterfaceResultsInformation = 166;
         internal delegate bool SymGetSymFromName64Delegate(
             [In] IntPtr hProcess,
-            [In, MarshalAs(UnmanagedType.LPWStr)] string Name,
+            [In, MarshalAs(UnmanagedType.LPStr)] string Name,
             [In] UIntPtr /* PIMAGEHLP_SYMBOL64 */ Symbol);
         internal delegate bool SymInitializeWDelegate(
             [In] IntPtr hProcess,
