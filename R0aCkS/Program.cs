@@ -3,8 +3,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
-using Microsoft.Win32;
-
 namespace R0aCkS
 {
     internal class Program
@@ -61,7 +59,7 @@ namespace R0aCkS
                 string functionName = splitted[1];
                 string moduleName = functionNameAndModule;
                 // Get the symbol requested
-                Function = SymLookup(moduleName, functionName);
+                Function = SymbolHandling.Lookup(moduleName, functionName);
                 if (UIntPtr.Zero == Function) {
                     Console.WriteLine("[-] Could not find symbol!");
                     return false;
@@ -78,18 +76,18 @@ namespace R0aCkS
         {
             // First, set the size that the user wants
             Console.WriteLine("[+] Setting size to                                      0x{0:X16}", ValueSize);
-            if (!CmdWriteKernel(KernelExecute, (void*)g_HstiBufferSize, ValueSize)) {
+            if (!CmdWriteKernel(KernelExecute, (void*)SymbolHandling.g_HstiBufferSize, ValueSize)) {
                 Console.WriteLine("[-] Fail to set size");
                 return false;
             }
             // Then, set the pointer -- our write is 32-bits so we do it in 2 steps
             Console.WriteLine("[+] Setting pointer to                                   0x{0:X16}\n",
                 (UIntPtr)KernelAddress);
-            if (!CmdWriteKernel(KernelExecute, (void*)g_HstiBufferPointer, (uint)((ulong)KernelAddress & 0xFFFFFFFF))) {
+            if (!CmdWriteKernel(KernelExecute, (void*)SymbolHandling.g_HstiBufferPointer, (uint)((ulong)KernelAddress & 0xFFFFFFFF))) {
                 Console.WriteLine("[-] Fail to set lower pointer bits");
                 return false;
             }
-            if (!CmdWriteKernel(KernelExecute, (void*)((ulong)g_HstiBufferPointer + 4), (uint)((ulong)KernelAddress >> 32))) {
+            if (!CmdWriteKernel(KernelExecute, (void*)((ulong)SymbolHandling.g_HstiBufferPointer + 4), (uint)((ulong)KernelAddress >> 32))) {
                 Console.WriteLine("[-] Fail to set lower pointer bits");
                 return false;
             }
@@ -148,14 +146,14 @@ namespace R0aCkS
                 return false;
             }
             // Setup the work item
-            if (!KernelExecuteSetCallback(KernelExecute, g_XmFunction, (UIntPtr)(&xmContext))) {
+            if (!KernelExecuteSetCallback(KernelExecute, SymbolHandling.g_XmFunction, (UIntPtr)(&xmContext))) {
                 Console.WriteLine("[-] Failed to initialize work item!\n");
                 // KernelFree(kernelAlloc);
                 return false;
             }
             // Begin ETW tracing to look for the work item executing
             ETW_DATA etwData = new ETW_DATA();
-            if (!EtwStartSession(&etwData, g_XmFunction)) {
+            if (!EtwStartSession(&etwData, SymbolHandling.g_XmFunction)) {
                 Console.WriteLine("[-] Failed to start ETW trace\n");
                 // KernelFree(kernelAlloc);
                 return false;
@@ -421,74 +419,6 @@ namespace R0aCkS
             return true;
         }
 
-        internal static UIntPtr GetDriverBaseAddr(string BaseName)
-        {
-            UIntPtr[] BaseAddresses = new UIntPtr[1024];
-            uint cbNeeded;
-
-            // Enumerate all the device drivers
-            if (!Natives.EnumDeviceDrivers(BaseAddresses, (uint)(IntPtr.Size * BaseAddresses.Length), out cbNeeded)) {
-                Console.WriteLine("[-] Failed to enumerate driver base addresses: 0x{0:8X}", Marshal.GetLastWin32Error());
-                return UIntPtr.Zero;
-            }
-            IntPtr buffer = IntPtr.Zero;
-            const int bufferLength = 260;
-            try {
-                buffer = Marshal.AllocHGlobal(bufferLength);
-                // Go through each one
-                for (int index = 0; index < (cbNeeded / IntPtr.Size); index++) {
-                    // Get its name
-                    if (0 == Natives.GetDeviceDriverBaseNameA(BaseAddresses[index], buffer, bufferLength)) {
-                        Console.WriteLine("[-] Failed to get driver name: 0x{0:8X}", Marshal.GetLastWin32Error());
-                        return UIntPtr.Zero;
-                    }
-                    // Compare it
-                    string candidate = Marshal.PtrToStringAnsi(buffer);
-                    if (0 == string.Compare(candidate, BaseName, true)) {
-                        return BaseAddresses[index];
-                    }
-                }
-            }
-            finally {
-                if (IntPtr.Zero != buffer) { Marshal.FreeHGlobal(buffer); }
-            }
-            return UIntPtr.Zero;
-        }
-
-        //internal static unsafe UIntPtr KernelAlloc(AllocationTracker KernelAlloc, uint Size)
-        //{
-        //    // Only support < 2KB allocations
-        //    // KernelAlloc = null;
-        //    if (Size > 2048) {
-        //        return UIntPtr.Zero;
-        //    }
-        //    // Allocate our tracker structure
-        //    //*KernelAlloc = Natives.HeapAlloc(Natives.GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(**KernelAlloc));
-        //    //if (null == KernelAlloc) {
-        //    //    return UIntPtr.Zero;
-        //    //}
-        //    // Compute a magic size to get something in big pool that should be unique
-        //    // This will use at most ~5MB of non-paged pool
-        //    KernelAlloc.MagicSize = 0;
-        //    while (0 == KernelAlloc.MagicSize) {
-        //        KernelAlloc.MagicSize = (uint)(((Helpers.Rdtsc() & 0xFF000000) >> 24) * 0x5000);
-        //    }
-        //    // Allocate the right child page that will be sent to the trampoline
-        //    KernelAlloc.UserBase = Natives.VirtualAlloc(UIntPtr.Zero, KernelAlloc.MagicSize,
-        //        0x00003000 /* MEM_COMMIT | MEM_RESERVE*/, 4 /*PAGE_READWRITE*/);
-        //    if (UIntPtr.Zero == KernelAlloc.UserBase) {
-        //        Console.WriteLine("[-] Failed to allocate user-mode memory for kernel buffer");
-        //        return UIntPtr.Zero;
-        //    }
-        //    // Allocate a pipe to hold on to the buffer
-        //    if (!Natives.CreatePipe(out KernelAlloc.Pipe0, out KernelAlloc.Pipe1, UIntPtr.Zero, KernelAlloc.MagicSize)) {
-        //        Console.WriteLine("[-] Failed creating the pipe: 0x{0:X16}", Marshal.GetLastWin32Error());
-        //        return UIntPtr.Zero;
-        //    }
-        //    // Return the allocated user-mode base
-        //    return KernelAlloc.UserBase;
-        //}
-
         private static unsafe bool KernelExecuteRun(KERNEL_EXECUTE KernelExecute)
         {
             // Remember original pointer
@@ -641,12 +571,9 @@ namespace R0aCkS
                     return -1;
                 }
                 // Initialize symbol engine
-                if (!SymSetup()) {
-                    Console.WriteLine("[-] Failed to initialize Symbol Engine");
-                    return -1;
-                }
+                SymbolHandling.Initialize();
                 // Initialize our execution engine
-                if (!KernelExecuteSetup(kernelExecute, g_TrampolineFunction)) {
+                if (!KernelExecuteSetup(kernelExecute, SymbolHandling.g_TrampolineFunction)) {
                     Console.WriteLine("[-] Failed to setup Ring 0 execution engine");
                     return -1;
                 }
@@ -712,193 +639,6 @@ namespace R0aCkS
             }
         }
 
-        private static unsafe UIntPtr SymLookup(string ModuleName, string SymbolName)
-        {
-            UIntPtr imageBase = UIntPtr.Zero;
-            UIntPtr kernelBase = UIntPtr.Zero;
-            ulong offset;
-            UIntPtr /* PIMAGEHLP_SYMBOL64 */ symbol = UIntPtr.Zero;
-            UIntPtr realKernelBase;
-
-            try {
-                // Get the base address of the kernel image in kernel-mode
-                realKernelBase = GetDriverBaseAddr(ModuleName);
-                if (UIntPtr.Zero == realKernelBase) {
-                    Console.WriteLine("[-] Couldn't find base address for {0}", ModuleName);
-                    return UIntPtr.Zero;
-                }
-
-                // Load the kernel image in user-mode
-                kernelBase = Natives.LoadLibraryExA(ModuleName, IntPtr.Zero, 0x00000001 /* DONT_RESOLVE_DLL_REFERENCES*/);
-                if (UIntPtr.Zero == kernelBase) {
-                    Console.WriteLine("[-] Couldn't map {0}!", ModuleName);
-                    return UIntPtr.Zero;
-                }
-
-                // Allocate space for a symbol buffer
-                symbol = (UIntPtr)Natives.HeapAlloc(Natives.GetProcessHeap(), 0x00000008 /* HEAP_ZERO_MEMORY */,
-                    (uint)(Marshal.SizeOf<IMAGEHLP_SYMBOL64>() + 2));
-                if (UIntPtr.Zero == symbol) {
-                    Console.WriteLine("[-] Not enough memory to allocate IMAGEHLP_SYMBOL64");
-                    return UIntPtr.Zero;
-                }
-
-                // Attach symbols to our module
-                imageBase = pSymLoadModuleEx(Natives.GetCurrentProcess(), IntPtr.Zero, ModuleName, ModuleName,
-                    kernelBase, 0, UIntPtr.Zero, 0);
-                if (imageBase != kernelBase) {
-                    Console.WriteLine("[-] Couldn't load symbols for {0}", ModuleName);
-                    return UIntPtr.Zero;
-                }
-
-                // Build the symbol name
-                string symName = ModuleName + "!" + SymbolName;
-
-                // Look it up
-                Marshal.WriteInt32(symbol, 0, Marshal.SizeOf<IMAGEHLP_SYMBOL64>());
-                // symbol->SizeOfStruct = sizeof(*symbol);
-                Marshal.WriteInt32(symbol, (int)Marshal.OffsetOf<IMAGEHLP_SYMBOL64>("MaxNameLength"), 1);
-                // symbol->MaxNameLength = 1;
-                if (!pSymGetSymFromName64(Natives.GetCurrentProcess(), symName, symbol)) {
-                    Console.WriteLine("[-] Couldn't find {0} symbol : Err 0x{1:X8}",
-                        symName, Marshal.GetLastWin32Error());
-                    return UIntPtr.Zero;
-                }
-                // Compute the offset based on the mapped address
-                offset = ((ulong)Marshal.ReadIntPtr(symbol, 4) /* symbol->Address */ - (ulong)kernelBase);
-            }
-            finally {
-                if (UIntPtr.Zero != kernelBase) {
-                    Natives.FreeLibrary(kernelBase);
-                }
-                if (UIntPtr.Zero != imageBase) {
-                    pSymUnloadModule64(Natives.GetCurrentProcess(), imageBase);
-                }
-                if (UIntPtr.Zero != symbol) {
-                    Natives.HeapFree(Natives.GetProcessHeap(), 0, symbol);
-                }
-            }
-            // Compute the final location based on the real kernel base
-            return (UIntPtr)((ulong)realKernelBase + offset);
-        }
-
-        private static bool SymSetup()
-        {
-            RegistryKey rootKey = null;
-            RegistryKey localMachineKey = null;
-
-            // Open the Kits key
-            try {
-                try {
-                    localMachineKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
-                    rootKey = localMachineKey.OpenSubKey(@"Software\Microsoft\Windows Kits\Installed Roots");
-                }
-                catch {
-                    Console.WriteLine("[-] No Windows SDK or WDK installed: 0x{0:X8}", Marshal.GetLastWin32Error());
-                    return false;
-                }
-                // Check where a kit was installed
-                string rootPath = null;
-                try { rootPath = (string)rootKey.GetValue("KitsRoot10", null); }
-                catch { }
-                finally {
-                    if (null == rootPath) {
-                        Console.WriteLine("[-] Win 10 SDK/WDK not found, falling back to 8.1: 0x{0:X8}", Marshal.GetLastWin32Error());
-                        try { rootPath = (string)rootKey.GetValue("KitsRoot81", null); }
-                        catch { }
-                        finally {
-                            if (null == rootPath) {
-                                Console.WriteLine("[-] Win 8.1 SDK / WDK not found, falling back to 8: 0x{ 0:X8}", Marshal.GetLastWin32Error());
-                                try { rootPath = (string)rootKey.GetValue("KitsRoot8", null); }
-                                catch { }
-                                finally {
-                                    if (null == rootPath) {
-                                        Console.WriteLine("[-] Win 8 SDK / WDK not found 0x{ 0:X8}", Marshal.GetLastWin32Error());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (null == rootPath) {
-                    return false;
-                }
-                // Now try to load the correct debug help library
-                rootPath += "debuggers\\x64\\dbghelp.dll";
-                IntPtr hMod = IntPtr.Zero;
-                try { hMod = Natives.LoadLibrary(rootPath); }
-                catch { }
-                if (IntPtr.Zero == hMod) {
-                    Console.WriteLine("[-] Failed to load Debugging Tools Dbghelp.dll: 0x{0:X8}", Marshal.GetLastWin32Error());
-                    return false;
-                }
-                // Get the APIs that we need
-                if (!InitializeBridgeDelegate(hMod, "SymSetOptions", out pSymSetOptions)) {
-                    return false;
-                }
-                if (!InitializeBridgeDelegate(hMod, "SymInitializeW", out pSymInitializeW)) {
-                    return false;
-                }
-                if (!InitializeBridgeDelegate(hMod, "SymLoadModuleEx", out pSymLoadModuleEx)) {
-                    return false;
-                }
-                if (!InitializeBridgeDelegate(hMod, "SymGetSymFromName64", out pSymGetSymFromName64)) {
-                    return false;
-                }
-                if (!InitializeBridgeDelegate(hMod, "SymUnloadModule64", out pSymUnloadModule64)) {
-                    return false;
-                }
-
-                // Initialize the engine
-                pSymSetOptions(0x00000004 /*SYMOPT_DEFERRED_LOADS*/);
-                if (!pSymInitializeW(Natives.GetCurrentProcess(), null, true)) {
-                    Console.WriteLine("[-] Failed to initialize symbol engine: 0x{0:X8}", Marshal.GetLastWin32Error());
-                    return false;
-                }
-                // Initialize our gadgets
-                g_XmFunction = SymLookup("hal.dll", "XmMovOp");
-                if (UIntPtr.Zero == g_XmFunction) {
-                    Console.WriteLine("[-] Failed to find hal!XmMovOp");
-                    return false;
-                }
-                g_TrampolineFunction = SymLookup("ntoskrnl.exe", "PopFanIrpComplete");
-                if (UIntPtr.Zero == g_TrampolineFunction) {
-                    Console.WriteLine("[-] Failed to find nt!PopFanIrpComplete");
-                    return false;
-                }
-                // HSTI = Hardware Security Test Interface
-                // See https://docs.microsoft.com/fr-fr/windows-hardware/test/hlk/testref/hardware-security-testability-specification
-                g_HstiBufferSize = SymLookup("ntoskrnl.exe", "SepHSTIResultsSize");
-                if (UIntPtr.Zero == g_HstiBufferSize) {
-                    Console.WriteLine("[-] Failed to find nt!SepHSTIResultsSize");
-                    return false;
-                }
-                g_HstiBufferPointer = SymLookup("ntoskrnl.exe", "SepHSTIResultsBuffer");
-                if (UIntPtr.Zero == g_HstiBufferPointer) {
-                    Console.WriteLine("[-] Failed to find nt!SepHSTIResultsBuffer");
-                    return false;
-                }
-            }
-            finally {
-                if (null != rootKey) { rootKey.Dispose(); }
-                if (null != localMachineKey) { localMachineKey.Dispose(); }
-            }
-            return true;
-        }
-
-        private static bool InitializeBridgeDelegate<T>(IntPtr hMod, string functionName, out T pointer)
-        {
-            IntPtr dynamicFunction = Natives.GetProcAddress(hMod, functionName);
-            if (IntPtr.Zero == dynamicFunction) {
-                Console.WriteLine("[-] Failed to find {0}. Err 0x{1:X4}",
-                    functionName, Marshal.GetLastWin32Error());
-                pointer = default(T);
-                return false;
-            }
-            pointer = (T)(object)Marshal.GetDelegateForFunctionPointer(dynamicFunction, typeof(T));
-            return true;
-        }
-
         internal const uint PERF_WORKER_THREAD = 0x48000000;
         internal const uint EVENT_TRACE_GROUP_THREAD = 0x0500;
         internal const uint PERFINFO_LOG_TYPE_WORKER_THREAD_ITEM_END = (EVENT_TRACE_GROUP_THREAD | 0x41);
@@ -906,37 +646,6 @@ namespace R0aCkS
         internal const uint MAXIMUM_ALLOWED = (1 << 25);
         internal const uint SystemBigPoolInformation = 66;
         internal const uint SystemHardwareSecurityTestInterfaceResultsInformation = 166;
-        internal delegate bool SymGetSymFromName64Delegate(
-            [In] IntPtr hProcess,
-            [In, MarshalAs(UnmanagedType.LPStr)] string Name,
-            [In] UIntPtr /* PIMAGEHLP_SYMBOL64 */ Symbol);
-        internal delegate bool SymInitializeWDelegate(
-            [In] IntPtr hProcess,
-            [In, MarshalAs(UnmanagedType.LPWStr)] string UserSearchPath,
-            [In] bool fInvadeProcess);
-        internal delegate UIntPtr SymLoadModuleExDelegate(
-            [In] IntPtr hProcess,
-            [In] IntPtr hFile,
-            [In, MarshalAs(UnmanagedType.LPStr)] string ImageName,
-            [In, MarshalAs(UnmanagedType.LPStr)] string ModuleName,
-            [In] UIntPtr BaseOfDll,
-            [In] uint DllSize,
-            [In] UIntPtr /* MODLOAD_DATA */ Data,
-            [In] uint Flags);
-        internal delegate bool SymUnloadModule64Delegate(
-            [In] IntPtr hProcess,
-            [In] UIntPtr BaseOfDll);
-        internal delegate uint SymSetOptionsDelegate(
-            [In] uint SymOptions);
-        internal static SymGetSymFromName64Delegate pSymGetSymFromName64;
-        internal static SymInitializeWDelegate pSymInitializeW;
-        internal static SymLoadModuleExDelegate pSymLoadModuleEx;
-        internal static SymSetOptionsDelegate pSymSetOptions;
-        internal static SymUnloadModule64Delegate pSymUnloadModule64;
-        private static UIntPtr g_HstiBufferPointer;
-        private static UIntPtr g_HstiBufferSize;
-        private static UIntPtr g_TrampolineFunction;
-        private static UIntPtr g_XmFunction;
         private const string g_EtwTraceName = "r0ak-etw";
         // private static readonly byte[] g_EtwTraceName = Encoding.Unicode.GetBytes("r0ak-etw");
         private static readonly Guid g_EtwTraceGuid = new Guid(0x53636210, 0xbe24, 0x1264, 0xc6, 0xa5, 0xf0, 0x9c, 0x59, 0x88, 0x1e, 0xbd);
@@ -964,16 +673,6 @@ namespace R0aCkS
             internal IntPtr ParserHandle;
             internal Natives.EVENT_TRACE_PROPERTIES* Properties;
             internal UIntPtr WorkItemRoutine;
-        }
-
-        internal struct IMAGEHLP_SYMBOL64
-        {
-            internal uint SizeOfStruct;
-            internal IntPtr Address;
-            internal uint Size;
-            internal uint Flags;
-            internal uint MaxNameLength;
-            internal char Name;
         }
 
         // Tracks allocation state between calls
