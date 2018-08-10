@@ -9,18 +9,6 @@ namespace R0aCkS
 {
     internal class Program
     {
-        static unsafe Program()
-        {
-            byte[] rdtscAsm = new byte[] {
-                0x0F, 0x31, // rdtsc
-                0xC3        // ret
-            };
-            IntPtr assemblyCode = (IntPtr)(void*)Natives.VirtualAlloc(UIntPtr.Zero, (uint)rdtscAsm.Length,
-                0x1000 /* MEM_COMMIT */, 0x40 /* PAGE_EXECUTE_READWRITE */);
-            Marshal.Copy(rdtscAsm, 0, assemblyCode, rdtscAsm.Length);
-            Rdtsc = Marshal.GetDelegateForFunctionPointer<RdtscDelegate>(assemblyCode);
-        }
-
         internal static unsafe bool CmdExecuteKernel(KERNEL_EXECUTE KernelExecute, UIntPtr FunctionPointer, UIntPtr FunctionParameter)
         {
             // Initialize a work item for the caller-supplied function and argument
@@ -139,18 +127,21 @@ namespace R0aCkS
             Console.WriteLine("[+] Writing 0x{0:X8} to                                0x{1:X16}",
                 KernelValue, (UIntPtr)KernelAddress);
             // Allocate an XM_CONTEXT to drive the HAL x64 emulator
-            KERNEL_ALLOC kernelAlloc = new KERNEL_ALLOC();
-            XM_CONTEXT* xmContext = (XM_CONTEXT*)KernelAlloc(kernelAlloc, (uint)Marshal.SizeOf<XM_CONTEXT>());
-            if (null == xmContext) {
-                Console.WriteLine("[-] Failed to allocate memory for XM_CONTEXT\n");
-                return false;
+            AllocationTracker allocator;
+            try {
+                allocator = new AllocationTracker((uint)Marshal.SizeOf<XM_CONTEXT>());
             }
+            catch {
+                Console.WriteLine("[-] Failed to allocate memory for XM_CONTEXT\n");
+                throw;
+            }
+            XM_CONTEXT* xmContext = (XM_CONTEXT*)allocator.UserBase;
             // Fill it out
             xmContext->SourceValue = KernelValue;
             xmContext->DataType = XM_OPERATION_DATATYPE.LONG_DATA;
             xmContext->DestinationPointer = (UIntPtr)KernelAddress;
             // Make a kernel copy of it
-            xmContext = (XM_CONTEXT*)KernelWrite(&kernelAlloc);
+            xmContext = (XM_CONTEXT*)allocator.Write();
             if (null == xmContext) {
                 Console.WriteLine("[-] Failed to find kernel memory for XM_CONTEXT\n");
                 // KernelFree(&kernelAlloc);
@@ -464,84 +455,39 @@ namespace R0aCkS
             return UIntPtr.Zero;
         }
 
-        private static unsafe UIntPtr GetKernelAddress(uint Size)
-        {
-            // Allocate a large 32MB buffer to store pool tags in
-            SYSTEM_BIGPOOL_INFORMATION* bigPoolInfo = (SYSTEM_BIGPOOL_INFORMATION*)Natives.VirtualAlloc(UIntPtr.Zero,
-                POOL_TAG_FIXED_BUFFER, 0x00003000 /* MEM_COMMIT | MEM_RESERVE*/, 4 /*PAGE_READWRITE*/);
-            if (null == bigPoolInfo) {
-                Console.WriteLine("[-] No memory for pool buffer");
-                return UIntPtr.Zero;
-            }
-            // Dump all pool tags
-            uint resultLength;
-            uint status = Natives.NtQuerySystemInformation(66 /* SystemBigPoolInformation*/, (UIntPtr)bigPoolInfo,
-                POOL_TAG_FIXED_BUFFER, out resultLength);
-            if (0 != status) {
-                Console.WriteLine("[-] Failed to dump pool allocations: 0x{0:X}", status);
-                return UIntPtr.Zero;
-            }
-            // Scroll through them all
-            UIntPtr resultAddress;
-            uint i;
-            for (resultAddress = UIntPtr.Zero, i = 0; i < bigPoolInfo->Count; i++) {
-                // Check for the desired allocation
-                SYSTEM_BIGPOOL_ENTRY* entry = &bigPoolInfo->AllocatedInfo + i;
-                if (entry->TagUlong == NPFS_DATA_ENTRY_POOL_TAG) {
-                    // With the Heap-Backed Pool in RS5/19H1, sizes are precise, while
-                    // the large pool allocator uses page-aligned pages
-                    if ((entry->SizeInBytes == (Size + PAGE_SIZE)) ||
-                        (entry->SizeInBytes == (Size + NPFS_DATA_ENTRY_SIZE)))
-                    {
-                        // Mask out the nonpaged pool bit
-                        resultAddress = (UIntPtr)((ulong)entry->VirtualAddress & (ulong.MaxValue - 1)); // ~1;
-                        break;
-                    }
-                }
-            }
-            // Weird..
-            if (UIntPtr.Zero == resultAddress) {
-                Console.WriteLine("[-] Kernel buffer not found!");
-                return UIntPtr.Zero;
-            }
-            // Free the buffer
-            Natives.VirtualFree((UIntPtr)bigPoolInfo, 0, 0x8000 /*MEM_RELEASE*/);
-            return (resultAddress + (int)NPFS_DATA_ENTRY_SIZE);
-        }
-
-        internal static unsafe UIntPtr KernelAlloc(KERNEL_ALLOC KernelAlloc, uint Size)
-        {
-            // Only support < 2KB allocations
-            // KernelAlloc = null;
-            if (Size > 2048) {
-                return UIntPtr.Zero;
-            }
-            // Allocate our tracker structure
-            //*KernelAlloc = Natives.HeapAlloc(Natives.GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(**KernelAlloc));
-            //if (null == KernelAlloc) {
-            //    return UIntPtr.Zero;
-            //}
-            // Compute a magic size to get something in big pool that should be unique
-            // This will use at most ~5MB of non-paged pool
-            KernelAlloc.MagicSize = 0;
-            while (0 == KernelAlloc.MagicSize) {
-                KernelAlloc.MagicSize = (uint)(((Rdtsc() & 0xFF000000) >> 24) * 0x5000);
-            }
-            // Allocate the right child page that will be sent to the trampoline
-            KernelAlloc.UserBase = Natives.VirtualAlloc(UIntPtr.Zero, KernelAlloc.MagicSize,
-                0x00003000 /* MEM_COMMIT | MEM_RESERVE*/, 4 /*PAGE_READWRITE*/);
-            if (UIntPtr.Zero == KernelAlloc.UserBase) {
-                Console.WriteLine("[-] Failed to allocate user-mode memory for kernel buffer");
-                return UIntPtr.Zero;
-            }
-            // Allocate a pipe to hold on to the buffer
-            if (!Natives.CreatePipe(out KernelAlloc.Pipe0, out KernelAlloc.Pipe1, UIntPtr.Zero, KernelAlloc.MagicSize)) {
-                Console.WriteLine("[-] Failed creating the pipe: 0x{0:X16}", Marshal.GetLastWin32Error());
-                return UIntPtr.Zero;
-            }
-            // Return the allocated user-mode base
-            return KernelAlloc.UserBase;
-        }
+        //internal static unsafe UIntPtr KernelAlloc(AllocationTracker KernelAlloc, uint Size)
+        //{
+        //    // Only support < 2KB allocations
+        //    // KernelAlloc = null;
+        //    if (Size > 2048) {
+        //        return UIntPtr.Zero;
+        //    }
+        //    // Allocate our tracker structure
+        //    //*KernelAlloc = Natives.HeapAlloc(Natives.GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(**KernelAlloc));
+        //    //if (null == KernelAlloc) {
+        //    //    return UIntPtr.Zero;
+        //    //}
+        //    // Compute a magic size to get something in big pool that should be unique
+        //    // This will use at most ~5MB of non-paged pool
+        //    KernelAlloc.MagicSize = 0;
+        //    while (0 == KernelAlloc.MagicSize) {
+        //        KernelAlloc.MagicSize = (uint)(((Helpers.Rdtsc() & 0xFF000000) >> 24) * 0x5000);
+        //    }
+        //    // Allocate the right child page that will be sent to the trampoline
+        //    KernelAlloc.UserBase = Natives.VirtualAlloc(UIntPtr.Zero, KernelAlloc.MagicSize,
+        //        0x00003000 /* MEM_COMMIT | MEM_RESERVE*/, 4 /*PAGE_READWRITE*/);
+        //    if (UIntPtr.Zero == KernelAlloc.UserBase) {
+        //        Console.WriteLine("[-] Failed to allocate user-mode memory for kernel buffer");
+        //        return UIntPtr.Zero;
+        //    }
+        //    // Allocate a pipe to hold on to the buffer
+        //    if (!Natives.CreatePipe(out KernelAlloc.Pipe0, out KernelAlloc.Pipe1, UIntPtr.Zero, KernelAlloc.MagicSize)) {
+        //        Console.WriteLine("[-] Failed creating the pipe: 0x{0:X16}", Marshal.GetLastWin32Error());
+        //        return UIntPtr.Zero;
+        //    }
+        //    // Return the allocated user-mode base
+        //    return KernelAlloc.UserBase;
+        //}
 
         private static unsafe bool KernelExecuteRun(KERNEL_EXECUTE KernelExecute)
         {
@@ -573,27 +519,28 @@ namespace R0aCkS
         internal static unsafe bool KernelExecuteSetCallback(KERNEL_EXECUTE KernelExecute,
             UIntPtr WorkFunction, UIntPtr WorkParameter)
         {
-            CONTEXT_PAGE* contextBuffer;
-            KERNEL_ALLOC kernelAlloc = new KERNEL_ALLOC();
-
             // Allocate the right child page that will be sent to the trampoline
-            contextBuffer = (CONTEXT_PAGE*)KernelAlloc(kernelAlloc, (uint)Marshal.SizeOf<CONTEXT_PAGE>());
-            if (null == contextBuffer) {
-                Console.WriteLine("[-] Failed to allocate memory for WORK_QUEUE_ITEM");
-                return false;
+            AllocationTracker allocator;
+            try {
+                allocator = new AllocationTracker((uint)Marshal.SizeOf<CONTEXT_PAGE>());
             }
+            catch {
+                Console.WriteLine("[-] Failed to allocate memory for WORK_QUEUE_ITEM");
+                throw;
+            }
+            CONTEXT_PAGE* contextBuffer = (CONTEXT_PAGE*)allocator.UserBase;
             // Fill out the worker and its parameter
             contextBuffer->WorkItem.WorkerRoutine = WorkFunction;
             contextBuffer->WorkItem.Parameter = WorkParameter;
             // Write into the buffer
-            contextBuffer = (CONTEXT_PAGE*)KernelWrite(&kernelAlloc);
+            contextBuffer = (CONTEXT_PAGE*)allocator.Write();
             if (null == contextBuffer) {
                 // KernelFree(kernelAlloc);
                 Console.WriteLine("[-] Failed to find kernel memory for WORK_QUEUE_ITEM");
                 return false;
             }
             // Return the balanced links with the appropriate work item
-            KernelExecute.TrampolineAllocation = &kernelAlloc;
+            KernelExecute.TrampolineAllocation = &allocator;
             KernelExecute.TrampolineParameter = &contextBuffer->Header;
             return true;
         }
@@ -657,33 +604,22 @@ namespace R0aCkS
         private static unsafe void KernelExecuteTeardown(KERNEL_EXECUTE KernelExecute)
         {
             // Free the trampoline context
-            KernelFree(KernelExecute.TrampolineAllocation);
+            KernelExecute.TrampolineAllocation->Dispose();
             // Unmap the globals
             Natives.UnmapViewOfFile((IntPtr)KernelExecute.Globals);
         }
 
-        internal static unsafe void KernelFree(KERNEL_ALLOC* allocation)
-        {
-            // Free the UM side of the allocation
-            Natives.VirtualFree(allocation->UserBase, 0, 0x8000 /*MEM_RELEASE*/);
-            // Close the pipes, which will free the kernel side
-            Natives.CloseHandle(allocation->Pipe0);
-            Natives.CloseHandle(allocation->Pipe1);
-            // Free the structure
-            Natives.HeapFree(Natives.GetProcessHeap(), 0, (UIntPtr)allocation);
-        }
-
-        private static unsafe UIntPtr KernelWrite(KERNEL_ALLOC* KernelAlloc)
-        {
-            // Write into the buffer
-            uint bytesWriten;
-            if (!Natives.WriteFile(KernelAlloc->Pipe1, KernelAlloc->UserBase, KernelAlloc->MagicSize, out bytesWriten, UIntPtr.Zero)) {
-                Console.WriteLine("[-] Failed writing kernel buffer: 0x{0:X}", Marshal.GetLastWin32Error());
-                return UIntPtr.Zero;
-            }
-            // Compute the kernel address and return it
-            return (KernelAlloc->KernelBase = GetKernelAddress(KernelAlloc->MagicSize));
-        }
+        //private static unsafe UIntPtr KernelWrite(AllocationTracker* KernelAlloc)
+        //{
+        //    // Write into the buffer
+        //    uint bytesWriten;
+        //    if (!Natives.WriteFile(KernelAlloc->Pipe1, (UIntPtr)KernelAlloc->UserBase, KernelAlloc->MagicSize, out bytesWriten, UIntPtr.Zero)) {
+        //        Console.WriteLine("[-] Failed writing kernel buffer: 0x{0:X}", Marshal.GetLastWin32Error());
+        //        return UIntPtr.Zero;
+        //    }
+        //    // Compute the kernel address and return it
+        //    return (KernelAlloc->KernelBase = GetKernelAddress(KernelAlloc->MagicSize));
+        //}
 
         internal static unsafe int Main(string[] args)
         {
@@ -963,17 +899,11 @@ namespace R0aCkS
             return true;
         }
 
-        private delegate long RdtscDelegate();
-        private static RdtscDelegate Rdtsc;
         internal const uint PERF_WORKER_THREAD = 0x48000000;
         internal const uint EVENT_TRACE_GROUP_THREAD = 0x0500;
         internal const uint PERFINFO_LOG_TYPE_WORKER_THREAD_ITEM_END = (EVENT_TRACE_GROUP_THREAD | 0x41);
         internal const uint FILE_MAP_ALL_ACCESS = 0x000F001F;
         internal const uint MAXIMUM_ALLOWED = (1 << 25);
-        internal const uint NPFS_DATA_ENTRY_POOL_TAG = 0x4E704672; // 'rFpN'
-        internal const uint NPFS_DATA_ENTRY_SIZE = 0x30;
-        internal const uint PAGE_SIZE = 4096;
-        internal const uint POOL_TAG_FIXED_BUFFER = (32 * 1024 * 1024);
         internal const uint SystemBigPoolInformation = 66;
         internal const uint SystemHardwareSecurityTestInterfaceResultsInformation = 166;
         internal delegate bool SymGetSymFromName64Delegate(
@@ -1047,20 +977,20 @@ namespace R0aCkS
         }
 
         // Tracks allocation state between calls
-        internal struct KERNEL_ALLOC
-        {
-            internal IntPtr Pipe0;
-            internal IntPtr Pipe1;
-            internal UIntPtr UserBase;
-            internal UIntPtr KernelBase;
-            internal uint MagicSize;
-        }
+        //internal struct KERNEL_ALLOC
+        //{
+        //    internal IntPtr Pipe0;
+        //    internal IntPtr Pipe1;
+        //    internal UIntPtr UserBase;
+        //    internal UIntPtr KernelBase;
+        //    internal uint MagicSize;
+        //}
 
         // Tracks execution state between calls
         internal unsafe struct KERNEL_EXECUTE
         {
             internal XSGLOBALS* Globals;
-            internal KERNEL_ALLOC* TrampolineAllocation;
+            internal AllocationTracker* TrampolineAllocation;
             internal RTL_BALANCED_LINKS* TrampolineParameter;
         }
 
@@ -1103,33 +1033,6 @@ namespace R0aCkS
             internal byte _filler0;
             internal byte _filler1;
             internal byte _filler2;
-        }
-
-        [StructLayout(LayoutKind.Explicit)]
-        internal struct SYSTEM_BIGPOOL_ENTRY
-        {
-            [FieldOffset(0)]
-            internal UIntPtr VirtualAddress;
-            [FieldOffset(0)]
-            internal ulong NonPaged; // :1
-            [FieldOffset(8)]
-            internal ulong SizeInBytes;
-            [FieldOffset(16)]
-            internal byte Tag0;
-            [FieldOffset(17)]
-            internal byte Tag1;
-            [FieldOffset(18)]
-            internal byte Tag2;
-            [FieldOffset(19)]
-            internal byte Tag3;
-            [FieldOffset(16)]
-            internal uint TagUlong;
-        }
-
-        internal struct SYSTEM_BIGPOOL_INFORMATION
-        {
-            internal uint Count;
-            internal SYSTEM_BIGPOOL_ENTRY AllocatedInfo /* [ANYSIZE_ARRAY] */;
         }
 
         internal struct WORK_QUEUE_ITEM
