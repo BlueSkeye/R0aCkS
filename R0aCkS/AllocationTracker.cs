@@ -11,7 +11,7 @@ namespace R0aCkS
         {
             // Only support < 2KB allocations
             if (size > 2048) {
-                throw new ArgumentOutOfRangeException("Size");
+                throw new ArgumentOutOfRangeException("size");
             }
             // Compute a magic size to get something in big pool that should be unique
             // This will use at most ~5MB of non-paged pool
@@ -61,10 +61,10 @@ namespace R0aCkS
             }
             // Scroll through them all
             UIntPtr resultAddress;
-            uint i;
-            for (resultAddress = UIntPtr.Zero, i = 0; i < bigPoolInfo->Count; i++) {
+            uint index;
+            for (resultAddress = UIntPtr.Zero, index = 0; index < bigPoolInfo->Count; index++) {
                 // Check for the desired allocation
-                SYSTEM_BIGPOOL_ENTRY* entry = &bigPoolInfo->AllocatedInfo + i;
+                SYSTEM_BIGPOOL_ENTRY* entry = &bigPoolInfo->AllocatedInfo + index;
                 if (entry->TagUlong == NPFS_DATA_ENTRY_POOL_TAG) {
                     // With the Heap-Backed Pool in RS5/19H1, sizes are precise, while
                     // the large pool allocator uses page-aligned pages
@@ -91,7 +91,9 @@ namespace R0aCkS
         public unsafe void Dispose()
         {
             // Free the UM side of the allocation
-            Natives.VirtualFree((UIntPtr)(this._userBase), 0, 0x8000 /*MEM_RELEASE*/);
+            if (null != _userBase) {
+                Natives.VirtualFree((UIntPtr)(this._userBase), 0, 0x8000 /*MEM_RELEASE*/);
+            }
             // Close the pipes, which will free the kernel side
             Natives.CloseHandle(this.Pipe0);
             Natives.CloseHandle(this.Pipe1);

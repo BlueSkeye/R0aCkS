@@ -61,6 +61,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="AllocationTracker.cs" />
+    <Compile Include="EtwTracer.cs" />
+    <Compile Include="ExecutionTracker.cs" />
     <Compile Include="Helpers.cs" />
     <Compile Include="Natives.cs" />
     <Compile Include="Program.cs" />

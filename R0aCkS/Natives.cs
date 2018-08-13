@@ -399,6 +399,27 @@ namespace R0aCkS
 
         internal struct EVENT_TRACE_PROPERTIES
         {
+            internal void Initialize()
+            {
+                Wnode.Initialize();
+                MinimumBuffers = 0;
+                MaximumBuffers = 0;
+                MaximumFileSize = 0;
+                LogFileMode = 0;
+                FlushTimer = 0;
+                EnableFlags = 0;
+                AgeLimit = 0;
+                NumberOfBuffers = 0;
+                FreeBuffers = 0;
+                EventsLost = 0;
+                BuffersWritten = 0;
+                LogBuffersLost = 0;
+                RealTimeBuffersLost = 0;
+                LoggerThreadId = IntPtr.Zero;
+                LogFileNameOffset = 0;
+                LoggerNameOffset = 0;
+            }
+
             internal WNODE_HEADER Wnode;
             internal uint BufferSize;
             internal uint MinimumBuffers;
@@ -547,6 +568,20 @@ namespace R0aCkS
         [StructLayout(LayoutKind.Explicit)]
         internal struct WNODE_HEADER
         {
+            internal void Initialize()
+            {
+                BufferSize = 0;
+                ProviderId = 0;
+                HistoricalContext = 0;
+                Version = 0;
+                Linkage = 0;
+                KernelHandle = IntPtr.Zero;
+                TimeStamp = 0;
+                Guid = Guid.Empty;
+                ClientContext = 0;
+                Flags = 0;
+            }
+
             [FieldOffset(0)]
             internal uint BufferSize;
             [FieldOffset(4)]
